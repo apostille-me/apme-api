@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "ore.api-docs.v1",
+  "service": {
+    "name": "apme-api",
+    "version": "0.1.0"
+  },
+  "public": {
+    "openapi": {
+      "path": "/openapi.json",
+      "aliases": [
+        "/api/docs.json"
+      ],
+      "mediaType": "application/vnd.oai.openapi+json;version=3.1",
+      "sha256": "3f71046f7308a2957ec94de435ed57bf081865c97ec6e538858d26d7d72fa762"
+    },
+    "ui": {
+      "path": "/api/docs",
+      "aliases": [
+        "/docs/api"
+      ]
+    }
+  },
+  "internal": {
+    "available": false
+  },
+  "mcp": {
+    "repository": "apostille-me/apme-mcp-server.rs",
+    "mode": "read-only",
+    "tools": [
+      "api_docs_discover",
+      "api_docs_get_openapi",
+      "api_docs_validate",
+      "api_docs_list_operations",
+      "api_docs_describe_operation"
+    ]
+  },
+  "provenance": {
+    "sourceRepository": "apostille-me/apme-api",
+    "gitSha": "456c3fd94a93dd42b9b12213525ec9db99754a81"
+  }
+}
