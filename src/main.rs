@@ -21,6 +21,7 @@ use std::{
     error::Error,
     io::{Error as IoError, ErrorKind},
     net::SocketAddr,
+    str::FromStr,
     sync::Arc,
 };
 use tokio::sync::{broadcast, RwLock};
