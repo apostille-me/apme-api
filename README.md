@@ -13,6 +13,25 @@ This software is an operational starter and does not provide legal advice. Keep 
 This repository is an executable bootstrap, not a production deployment. Before live
 use, add authentication, tenant authorization, rate limits, durable migrations,
 observability, backups, incident response, dependency review, and secret management.
+
+## Browser origin policy
+
+The API no longer accepts wildcard browser origins. Configure a comma-separated list of
+exact origins with `CORS_ALLOWED_ORIGINS`:
+
+```bash
+export CORS_ALLOWED_ORIGINS='https://app.apostille.me,https://admin.apostille.me'
+```
+
+Each value must be an `http` or `https` origin without a path, query, or fragment. When
+`APP_ENV=production`, `CORS_ALLOWED_ORIGINS` is required and startup fails closed if it
+is missing or invalid. Local development defaults to `http://127.0.0.1:3000` and
+`http://localhost:3000`; set the variable explicitly when using another development
+origin.
+
+This origin allowlist is only one part of DEN-3455. Route and WebSocket authorization
+must still be enforced with Shared Auth tenant claims before production use.
+
 ## Routes
 
 - `GET /healthz`, `GET /readyz`, `GET /metrics`
