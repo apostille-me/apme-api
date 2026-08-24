@@ -10,9 +10,39 @@ Track sanitized client references, document workflows, destination jurisdictions
 
 This software is an operational starter and does not provide legal advice. Keep identity documents and sensitive case files out of logs and this bootstrap data model; production use requires encryption, access controls, retention rules, auditability, and jurisdiction-specific professional review.
 
-This repository is an executable bootstrap, not a production deployment. Before live
-use, add authentication, tenant authorization, rate limits, durable migrations,
-observability, backups, incident response, dependency review, and secret management.
+The runtime now uses the official Shared Auth Rust guard for local ES256/JWKS
+verification, protected introspection for immediate revocation, and PostgreSQL-owned
+tenant membership and roles. It also uses durable idempotent case mutations,
+optimistic versions, encrypted-object references, retention/legal holds, and
+tamper-evident event and audit chains. Production use still requires rate limits,
+observability, tested backup/object-store/KMS procedures, incident response, dependency
+review, and secret management.
+
+## Identity and tenant boundary
+
+Set all authentication and database values at runtime; startup fails closed if any
+required value is absent:
+
+```text
+DATABASE_URL
+SHARED_AUTH_BASE_URL
+SHARED_AUTH_ISSUER
+SHARED_AUTH_AUDIENCE
+SHARED_AUTH_INTROSPECTION_CREDENTIAL
+```
+
+`SHARED_AUTH_INTROSPECTION_CREDENTIAL` is an independent service credential and must
+not be the end-user token. Every case REST request uses `Authorization: Bearer ...`
+and an explicit `x-apme-tenant-id` UUID. The token supplies only the stable Shared
+Auth user/session identity; the API reloads membership and role from
+`apme_tenant_memberships`. Create and transition requests additionally require an
+`Idempotency-Key` header. Request tracing records the method and outcome, not the URI,
+headers, tenant/case identifiers, bearer credential, or document reference.
+
+The WebSocket handshake uses the same local verification, protected introspection,
+and database membership check. Select the tenant explicitly with
+`/ws?tenant_id=<uuid>` and optionally select one case with `&case_id=<uuid>`. Published
+events carry an internal tenant scope and are filtered before serialization.
 
 ## Browser origin policy
 
@@ -29,19 +59,28 @@ is missing or invalid. Local development defaults to `http://127.0.0.1:3000` and
 `http://localhost:3000`; set the variable explicitly when using another development
 origin.
 
-This origin allowlist is only one part of DEN-3455. Route and WebSocket authorization
-must still be enforced with Shared Auth tenant claims before production use.
+The allowlist includes `Authorization`, `Content-Type`, `x-apme-tenant-id`, and
+`Idempotency-Key`; wildcard origins and credential-bearing cross-origin defaults are
+not accepted.
 
 ## Routes
 
 - `GET /healthz`, `GET /readyz`, `GET /metrics`
 - `GET|POST /api/v1/cases`
 - `GET /api/v1/cases/{id}`
-- `GET /ws` for JSON event envelopes
+- `POST /api/v1/cases/{id}/transition`
+- `POST /api/v1/cases/{id}/rotate-object` (administrator only; reference/digest/key version)
+- `GET /ws?tenant_id=<uuid>[&case_id=<uuid>]` for scoped JSON event envelopes
 
-The bootstrap uses bounded in-memory state so transport behavior is immediately
-testable. Replace it with SeaORM/PostgreSQL transactions before production and keep
-`apme-interfaces` as the tagged wire-contract authority.
+The server applies the pinned `apme-interfaces` tenant persistence migration before it
+accepts traffic. Run `cargo test --all-targets` against PostgreSQL to execute real
+two-connection idempotency/version races, restart durability, tenant isolation,
+retention/legal-hold, encrypted-reference key rotation, and tamper-detection canaries.
+
+Generated clients have not yet consumed the new retry/conflict fixtures. A production
+promotion must also exercise two deployed tenants over REST and WebSocket, expired and
+revoked live sessions, allowlisted and rejected preflights, backup/restore continuity,
+and object-store key rotation without exposing document credentials.
 
 ```bash
 cargo run
