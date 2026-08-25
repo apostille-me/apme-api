@@ -39,6 +39,15 @@ Auth user/session identity; the API reloads membership and role from
 `Idempotency-Key` header. Request tracing records the method and outcome, not the URI,
 headers, tenant/case identifiers, bearer credential, or document reference.
 
+The official Shared Auth Rust client is pinned to commit
+`cc57a85b276bee81ad94decc87df2f48d49cab9f`. Protected introspection sends the strict
+`IntrospectionRequest` envelope, caps responses at 64 KiB, requires
+`apme:cases:read` or `apme:cases:write`, and fails closed on authority errors or exact
+issuer, audience, session, lifetime, or scope mismatches. The independent service
+credential is attached only by the client. Ores structured logging is pinned to
+`ca176fb6768a9750d262a536952268625ffd3a8a`; bearer values, service credentials,
+tenant identifiers, document references, URLs, headers, and bodies are not log fields.
+
 The WebSocket handshake uses the same local verification, protected introspection,
 and database membership check. Select the tenant explicitly with
 `/ws?tenant_id=<uuid>` and optionally select one case with `&case_id=<uuid>`. Published
@@ -63,6 +72,32 @@ The allowlist includes `Authorization`, `Content-Type`, `x-apme-tenant-id`, and
 `Idempotency-Key`; wildcard origins and credential-bearing cross-origin defaults are
 not accepted.
 
+## Web-to-API interaction avenues
+
+The reviewed data-plane contract has four deliberately distinct avenues:
+
+1. The web tier may perform a literal tenant-predicated SeaORM read in an explicit
+   read-only transaction. It cannot migrate or mutate through that connection.
+2. Stateless HTTP uses the routes below, a fresh end-user bearer, exact tenant
+   membership, bounded bodies and timeouts, and no redirect-following client policy.
+3. Stateful TCP is opt-in through `APME_API_TCP_BIND` and requires a server
+   certificate/key plus `APME_API_TCP_CLIENT_CA_FILE`. Connections are mTLS-only,
+   length-delimited, concurrency/idle/request-count bounded, and every frame carries a
+   fresh bearer that is re-introspected before a tenant-scoped read.
+4. Durable async status uses the credential-free
+   `apme.web_api.outbox.status`/`apme.web_api.inbox.status.*` JetStream pair. The API
+   requires TLS, an external NATS credentials file, pre-provisioned file-backed
+   streams, work-queue request retention, bounded delivery, a durable pull consumer,
+   explicit acknowledgement, broker deduplication, correlated response IDs, and
+   bounded payloads. User and service bearer tokens are forbidden in messages.
+
+TCP configuration is completed with `APME_API_TCP_TLS_CERT_FILE`,
+`APME_API_TCP_TLS_KEY_FILE`, and the bounded optional connection settings documented
+in `src/transport.rs`. JetStream configuration uses `APME_NATS_URL` (which must be
+`tls://`), `APME_NATS_CREDENTIALS_FILE`, and optional pre-provisioned stream/consumer
+names. Omitting an avenue's enabling variable leaves that listener disabled; a
+partially configured enabled avenue fails startup.
+
 ## Routes
 
 - `GET /healthz`, `GET /readyz`, `GET /metrics`
@@ -85,6 +120,10 @@ and object-store key rotation without exposing document credentials.
 ```bash
 cargo run
 ```
+
+The Zed package manifest records dependency intent and the locked Rust validation
+command. No `.zpkg.lock` is committed until a real Zed resolver successfully produces
+one.
 
 ## Environment secrets
 

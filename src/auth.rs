@@ -4,6 +4,10 @@ use shared_auth_client::{Introspection, SharedAuthClient};
 use shared_auth_lib::{AuthOutcome, Authority, AuthorityConfig, Guard, GuardConfig, Identity};
 use std::{env, sync::Arc, time::Duration};
 
+const MAX_INTROSPECTION_RESPONSE_BYTES: usize = 64 * 1024;
+pub const CASES_READ_SCOPE: &str = "apme:cases:read";
+pub const CASES_WRITE_SCOPE: &str = "apme:cases:write";
+
 #[derive(Clone)]
 pub struct AuthService {
     guard: Arc<Guard>,
@@ -23,6 +27,8 @@ pub enum AuthFailure {
 pub enum AuthConfigError {
     #[error("required authentication setting {0} is missing")]
     Missing(&'static str),
+    #[error("Shared Auth client configuration is invalid")]
+    InvalidClient,
 }
 
 impl AuthService {
@@ -50,8 +56,10 @@ impl AuthService {
             race_deadline: Duration::from_secs(2),
             ..GuardConfig::default()
         });
-        let introspection =
-            SharedAuthClient::new(base).with_service_credential(introspection_credential);
+        let introspection = SharedAuthClient::try_new(base)
+            .map_err(|_| AuthConfigError::InvalidClient)?
+            .with_max_response_bytes(MAX_INTROSPECTION_RESPONSE_BYTES)
+            .with_service_credential(introspection_credential);
 
         Ok(Self {
             guard: Arc::new(guard),
@@ -68,6 +76,16 @@ impl AuthService {
     /// introspection so a revoked session fails immediately.
     #[tracing::instrument(name = "apme.authenticate", skip_all)]
     pub async fn authenticate(&self, headers: &HeaderMap) -> Result<VerifiedSubject, AuthFailure> {
+        self.authenticate_with_scopes(headers, &[CASES_READ_SCOPE])
+            .await
+    }
+
+    #[tracing::instrument(name = "apme.authenticate.scoped", skip_all)]
+    pub async fn authenticate_with_scopes(
+        &self,
+        headers: &HeaderMap,
+        required_scopes: &[&str],
+    ) -> Result<VerifiedSubject, AuthFailure> {
         let bearer = bearer(headers).ok_or(AuthFailure::Unauthorized)?;
         let identity = match self.guard.check(headers).await {
             AuthOutcome::Authenticated {
@@ -84,7 +102,7 @@ impl AuthService {
 
         let introspection = self
             .introspection
-            .introspect_for_audience(bearer, &self.audience)
+            .introspect_with_requirements(bearer, &self.audience, required_scopes)
             .await
             .map_err(|_| AuthFailure::Degraded)?;
         validate_active_session(
@@ -92,6 +110,7 @@ impl AuthService {
             &introspection,
             &self.issuer,
             &self.audience,
+            required_scopes,
             unix_now(),
         )
     }
@@ -127,6 +146,7 @@ fn validate_active_session(
     introspection: &Introspection,
     issuer: &str,
     audience: &str,
+    required_scopes: &[&str],
     now: u64,
 ) -> Result<VerifiedSubject, AuthFailure> {
     let identity_session = identity
@@ -141,6 +161,9 @@ fn validate_active_session(
         || introspection.sid.as_deref() != Some(identity_session)
         || introspection.exp.is_none_or(|expires| expires <= now)
         || introspection.nbf.is_some_and(|not_before| not_before > now)
+        || required_scopes
+            .iter()
+            .any(|required| !introspection.has_scope(required))
     {
         return Err(AuthFailure::Unauthorized);
     }
@@ -182,7 +205,8 @@ mod tests {
             "aud": "apostille-me",
             "sid": "session-42",
             "nbf": 900,
-            "exp": 1100
+            "exp": 1100,
+            "scope": "apme:cases:read apme:cases:write"
         }))
         .unwrap()
     }
@@ -194,6 +218,7 @@ mod tests {
             &introspection(),
             "https://auth.example",
             "apostille-me",
+            &[CASES_READ_SCOPE],
             1000,
         )
         .unwrap();
@@ -211,6 +236,7 @@ mod tests {
                 &revoked,
                 "https://auth.example",
                 "apostille-me",
+                &[CASES_READ_SCOPE],
                 1000
             ),
             Err(AuthFailure::Unauthorized)
@@ -224,6 +250,7 @@ mod tests {
                 &expired,
                 "https://auth.example",
                 "apostille-me",
+                &[CASES_READ_SCOPE],
                 1000
             ),
             Err(AuthFailure::Unauthorized)
@@ -237,6 +264,7 @@ mod tests {
                 &wrong_session,
                 "https://auth.example",
                 "apostille-me",
+                &[CASES_READ_SCOPE],
                 1000
             ),
             Err(AuthFailure::Unauthorized)
@@ -251,6 +279,7 @@ mod tests {
                 &introspection(),
                 "https://other.example",
                 "apostille-me",
+                &[CASES_READ_SCOPE],
                 1000
             ),
             Err(AuthFailure::Unauthorized)
@@ -261,6 +290,7 @@ mod tests {
                 &introspection(),
                 "https://auth.example",
                 "other-product",
+                &[CASES_READ_SCOPE],
                 1000
             ),
             Err(AuthFailure::Unauthorized)

@@ -1,5 +1,5 @@
 use apme_api::{
-    auth::{AuthFailure, AuthService},
+    auth::{AuthFailure, AuthService, CASES_READ_SCOPE, CASES_WRITE_SCOPE},
     cases::{CaseService, CaseServiceError},
 };
 use apme_interfaces::{
@@ -24,6 +24,7 @@ use axum::{
 };
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
+use next_loggers::{Logger, Options};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -31,13 +32,15 @@ use std::{
     io::{Error as IoError, ErrorKind},
     net::SocketAddr,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     trace::TraceLayer,
 };
 use tracing::info;
 use uuid::Uuid;
+
+mod transport;
 
 const DEFAULT_DEV_ORIGINS: &str = "http://127.0.0.1:3000,http://localhost:3000";
 const TENANT_HEADER: &str = "x-apme-tenant-id";
@@ -79,6 +82,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .unwrap_or_else(|_| "info,tower_http=info".into()),
         )
         .init();
+    let _ores_logger = init_ores_logger()?;
 
     let auth = AuthService::from_env()?;
     let cases = CaseService::from_env().await?;
@@ -90,6 +94,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cases,
         events,
     };
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let _transport_tasks = start_optional_transports(state.clone(), shutdown_receiver).await?;
     let app = Router::new()
         .route("/", get(index))
         .route("/healthz", get(health))
@@ -118,8 +124,69 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "Apostille Me API listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            if tokio::signal::ctrl_c().await.is_err() {
+                tracing::warn!("shutdown signal listener failed");
+            }
+            let _ = shutdown_sender.send(true);
+        })
+        .await?;
     Ok(())
+}
+
+fn init_ores_logger() -> Result<Logger, Box<dyn Error>> {
+    let logger = Logger::new(Options {
+        app_name: "apme-api".to_owned(),
+        console: true,
+        ..Options::default()
+    });
+    logger
+        .info(vec![serde_json::json!("service.starting")])
+        .add_fields(serde_json::Map::from_iter([
+            (
+                "auth.mode".to_owned(),
+                serde_json::json!("protected_introspection"),
+            ),
+            (
+                "transport.modes".to_owned(),
+                serde_json::json!([
+                    "direct_read_only_db",
+                    "stateless_http",
+                    "stateful_mtls_tcp",
+                    "durable_jetstream"
+                ]),
+            ),
+        ]))
+        .send()?;
+    Ok(logger)
+}
+
+async fn start_optional_transports(
+    state: AppState,
+    shutdown: watch::Receiver<bool>,
+) -> Result<Vec<tokio::task::JoinHandle<()>>, Box<dyn Error>> {
+    let mut tasks = Vec::new();
+    #[cfg(feature = "tcp-transport")]
+    if let Some(config) = transport::tcp::Config::from_env()? {
+        let server = transport::tcp::Server::bind(config, state.clone()).await?;
+        let tcp_shutdown = shutdown.clone();
+        tasks.push(tokio::spawn(async move {
+            if let Err(error) = server.serve(tcp_shutdown).await {
+                tracing::error!(error = %error, "mTLS transport stopped");
+            }
+        }));
+    }
+    #[cfg(feature = "nats-transport")]
+    if let Some(config) = transport::nats::Config::from_env()? {
+        let worker = transport::nats::Worker::connect(config, state).await?;
+        tasks.push(tokio::spawn(async move {
+            if let Err(error) = worker.serve(shutdown).await {
+                tracing::error!(error = %error, "JetStream transport stopped");
+            }
+        }));
+    }
+    Ok(tasks)
 }
 
 fn cors_layer_from_env() -> Result<CorsLayer, Box<dyn Error>> {
@@ -258,7 +325,8 @@ async fn create_case(
     headers: HeaderMap,
     Json(command): Json<CreateCaseCommand>,
 ) -> Result<(StatusCode, Json<CaseMutationResult>), ApiError> {
-    let (subject, context) = authorized_tenant(&state, &headers).await?;
+    let (subject, context) =
+        authorized_tenant_with_scopes(&state, &headers, &[CASES_WRITE_SCOPE]).await?;
     let idempotency_key = idempotency_key(&headers)?;
     let mutation = state
         .cases
@@ -279,7 +347,8 @@ async fn transition_case(
     headers: HeaderMap,
     Json(command): Json<TransitionCaseCommand>,
 ) -> Result<Json<CaseMutationResult>, ApiError> {
-    let (subject, context) = authorized_tenant(&state, &headers).await?;
+    let (subject, context) =
+        authorized_tenant_with_scopes(&state, &headers, &[CASES_WRITE_SCOPE]).await?;
     let idempotency_key = idempotency_key(&headers)?;
     let mutation = state
         .cases
@@ -304,7 +373,8 @@ async fn rotate_encrypted_object(
     headers: HeaderMap,
     Json(command): Json<RotateEncryptedObjectCommand>,
 ) -> Result<Json<CaseMutationResult>, ApiError> {
-    let (subject, context) = authorized_tenant(&state, &headers).await?;
+    let (subject, context) =
+        authorized_tenant_with_scopes(&state, &headers, &[CASES_WRITE_SCOPE]).await?;
     let idempotency_key = idempotency_key(&headers)?;
     let mutation = state
         .cases
@@ -335,8 +405,44 @@ async fn authorized_tenant(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(VerifiedSubject, TenantContext), ApiError> {
-    let subject = state.auth.authenticate(headers).await?;
+    authorized_tenant_with_scopes(state, headers, &[CASES_READ_SCOPE]).await
+}
+
+async fn authorized_tenant_with_scopes(
+    state: &AppState,
+    headers: &HeaderMap,
+    required_scopes: &[&str],
+) -> Result<(VerifiedSubject, TenantContext), ApiError> {
+    let subject = state
+        .auth
+        .authenticate_with_scopes(headers, required_scopes)
+        .await?;
     let tenant_id = tenant_id(headers)?;
+    let context = state.cases.tenant_context(&subject, tenant_id).await?;
+    Ok((subject, context))
+}
+
+async fn authorize_token(
+    state: &AppState,
+    token: &str,
+    tenant_id: Uuid,
+    required_scopes: &[&str],
+) -> Result<(VerifiedSubject, TenantContext), ApiError> {
+    if token.is_empty()
+        || token.len() > 16 * 1024
+        || token.chars().any(char::is_whitespace)
+        || token.chars().any(char::is_control)
+    {
+        return Err(ApiError::Authentication(AuthFailure::Unauthorized));
+    }
+    let mut headers = HeaderMap::new();
+    let authorization = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| ApiError::Authentication(AuthFailure::Unauthorized))?;
+    headers.insert(AUTHORIZATION, authorization);
+    let subject = state
+        .auth
+        .authenticate_with_scopes(&headers, required_scopes)
+        .await?;
     let context = state.cases.tenant_context(&subject, tenant_id).await?;
     Ok((subject, context))
 }
@@ -417,6 +523,24 @@ enum ApiError {
     Authentication(AuthFailure),
     Cases(CaseServiceError),
     Validation(String),
+}
+
+impl ApiError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Authentication(AuthFailure::Unauthorized) => "unauthorized",
+            Self::Authentication(AuthFailure::Forbidden)
+            | Self::Cases(CaseServiceError::NotAuthorized) => "forbidden",
+            Self::Authentication(AuthFailure::Degraded)
+            | Self::Cases(CaseServiceError::Storage(_)) => "temporarily_unavailable",
+            Self::Cases(CaseServiceError::NotFound) => "not_found",
+            Self::Cases(CaseServiceError::IdempotencyConflict) => "idempotency_key_reused",
+            Self::Cases(CaseServiceError::StaleVersion) => "stale_version",
+            Self::Cases(CaseServiceError::InvalidTransition) => "invalid_transition",
+            Self::Cases(CaseServiceError::KeyVersionRollback) => "key_version_rollback",
+            Self::Cases(CaseServiceError::Validation(_)) | Self::Validation(_) => "validation",
+        }
+    }
 }
 
 impl From<AuthFailure> for ApiError {
