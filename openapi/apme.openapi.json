@@ -1,0 +1,203 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Apostille Me API",
+    "version": "0.1.0",
+    "description": "Public HTTP and WebSocket contract for apostille case intake, case lookup, case listing, health, readiness, metrics, and case-event streaming."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "security": [],
+  "tags": [
+    {
+      "name": "system"
+    },
+    {
+      "name": "operations"
+    },
+    {
+      "name": "cases"
+    },
+    {
+      "name": "realtime"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "getServiceBanner",
+        "summary": "Describe the Apostille Me API service",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "Service metadata"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": true,
+        "x-ore-mcp-mutating": false
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Report process health",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "Health status"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": true,
+        "x-ore-mcp-mutating": false
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Report service readiness",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "Readiness status"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": true,
+        "x-ore-mcp-mutating": false
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "getMetrics",
+        "summary": "Read Prometheus record-count metrics",
+        "tags": [
+          "operations"
+        ],
+        "description": "Operational record counts are documented but excluded from the baseline MCP catalog.",
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": false,
+        "x-ore-mcp-mutating": false
+      }
+    },
+    "/api/v1/cases": {
+      "get": {
+        "operationId": "listCases",
+        "summary": "List all in-memory apostille cases",
+        "tags": [
+          "cases"
+        ],
+        "description": "Case records can contain applicant and document metadata and are excluded from the baseline MCP catalog.",
+        "responses": {
+          "200": {
+            "description": "Case list"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": false,
+        "x-ore-mcp-mutating": false
+      },
+      "post": {
+        "operationId": "createCase",
+        "summary": "Create an apostille case",
+        "tags": [
+          "cases"
+        ],
+        "responses": {
+          "201": {
+            "description": "Case created"
+          },
+          "422": {
+            "description": "Case input failed validation"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": false,
+        "x-ore-mcp-mutating": true
+      }
+    },
+    "/api/v1/cases/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "description": "Case UUID.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getCase",
+        "summary": "Get one apostille case",
+        "tags": [
+          "cases"
+        ],
+        "description": "Case records can contain applicant and document metadata and are excluded from the baseline MCP catalog.",
+        "responses": {
+          "200": {
+            "description": "Case record"
+          },
+          "404": {
+            "description": "Case not found"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "stable",
+        "x-ore-mcp-expose": false,
+        "x-ore-mcp-mutating": false
+      }
+    },
+    "/ws": {
+      "get": {
+        "operationId": "connectCaseEvents",
+        "summary": "Upgrade to the case-event WebSocket",
+        "tags": [
+          "cases",
+          "realtime"
+        ],
+        "description": "The stream emits complete case.created event payloads and is never exposed through the baseline MCP catalog.",
+        "responses": {
+          "101": {
+            "description": "WebSocket switching protocols"
+          }
+        },
+        "security": [],
+        "x-ore-visibility": "public",
+        "x-ore-stability": "beta",
+        "x-ore-mcp-expose": false,
+        "x-ore-mcp-mutating": false
+      }
+    }
+  }
+}
