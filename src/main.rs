@@ -76,13 +76,14 @@ struct Health<'a> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    const ROUTINE_ID: &str = "ores-routine-LXDz6tbVdoUI5eNeypgUQ";
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,tower_http=info".into()),
         )
         .init();
-    let _ores_logger = init_ores_logger()?;
+    let ores_logger = init_ores_logger()?;
 
     let auth = AuthService::from_env()?;
     let cases = CaseService::from_env().await?;
@@ -124,18 +125,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "Apostille Me API listening");
-    axum::serve(listener, app)
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             if tokio::signal::ctrl_c().await.is_err() {
                 tracing::warn!("shutdown signal listener failed");
             }
             let _ = shutdown_sender.send(true);
         })
-        .await?;
+        .await;
+    match &served {
+        Ok(()) => {
+            let _ = ores_logger
+                .info(vec![serde_json::json!("service.stopped")])
+                .add_trace("ores-trace-FZpM2CvyWaNPgT1LBeAz7", false)
+                .add_routine_id(ROUTINE_ID)
+                .send();
+        }
+        Err(_) => {
+            let _ = ores_logger
+                .error(vec![serde_json::json!("service.serve.failed")])
+                .add_trace("ores-trace-sGdZeKkFgTHxCLy5GtfOC", false)
+                .add_routine_id(ROUTINE_ID)
+                .send();
+        }
+    }
+    served?;
     Ok(())
 }
 
 fn init_ores_logger() -> Result<Logger, Box<dyn Error>> {
+    const ROUTINE_ID: &str = "ores-routine-_8OcwCEq_zTlF_JkXAbYS";
     let logger = Logger::new(Options {
         app_name: "apme-api".to_owned(),
         console: true,
@@ -158,6 +177,8 @@ fn init_ores_logger() -> Result<Logger, Box<dyn Error>> {
                 ]),
             ),
         ]))
+        .add_trace("ores-trace-MpUNZLngz1pc79VIPOQbX", false)
+        .add_routine_id(ROUTINE_ID)
         .send()?;
     Ok(logger)
 }
