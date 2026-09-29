@@ -1,0 +1,37 @@
+# Static ORES trace-marker compatibility contract.
+# Compatibility/admission: ^ores-(trace|routine)-[A-Za-z0-9_-]{12,64}$
+# Canonical generator width: 21-character nanoid suffix.
+name: ORES trace marker contract
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ores-trace-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout consumer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Checkout canonical checker
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ores-otel/ores.otel.log
+          ref: 4bc592884286f47372b4488b96d105bf40ef2d11
+          path: .ores-trace-contract-source
+          sparse-checkout: .github/ores-trace-contract.rs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Build canonical checker
+        run: rustc -O -o "$RUNNER_TEMP/ores-trace-contract" .ores-trace-contract-source/.github/ores-trace-contract.rs
+      - name: Self-test canonical checker
+        run: |
+          rustc --test -o "$RUNNER_TEMP/ores-trace-contract-test" .ores-trace-contract-source/.github/ores-trace-contract.rs
+          "$RUNNER_TEMP/ores-trace-contract-test"
+      - name: Verify static ORES trace markers
+        run: "$RUNNER_TEMP/ores-trace-contract" .
